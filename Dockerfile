@@ -22,6 +22,8 @@
 #   0007            sample one grammar-bound request during startup warmup so the
 #                   xgrammar FSM compile and bitmask kernel load land in the boot
 #                   window, not inside the first structured request.
+#   0008            break the Qwen4 weight-loader closure cycle so replaced
+#                   lm_head and initial MoE scale buffers are released promptly.
 #
 # RecoverSSM is present but only active with MTP/NEXTN and
 # --gdn-mtp-cache-mode none.
@@ -32,7 +34,7 @@
 FROM docker.io/lmsysorg/sglang:dev-cu13-qwen38-next-local@sha256:9d2a843c706c74bc259c0d9abf360551eb2734e1e7d255ab012a6965f10480b6
 
 LABEL ai.sglang.base.commit="4ccff141dbe992794f9da6c3aa23535b4f72000d" \
-      ai.sglang.patchset="0001-sm120-fp8-kv-cache,0002-sm120-gdn-recover-ssm,0003-sm120-online-fp8,0005-abort-ghost-fixes,0006-single-gpu-token-sync,0007-warm-grammar-path-before-serving" \
+      ai.sglang.patchset="0001-sm120-fp8-kv-cache,0002-sm120-gdn-recover-ssm,0003-sm120-online-fp8,0005-abort-ghost-fixes,0006-single-gpu-token-sync,0007-warm-grammar-path-before-serving,0008-qwen4-loader-release-refs" \
       ai.sglang.target.checkpoint="RadixArk/Qwen3.8-Flash-Next-NVFP4,nv-community/Qwen3.8-Flash-Next-NVFP4" \
       ai.sglang.mtp="RecoverSSM-capable"
 
@@ -46,6 +48,8 @@ COPY patches/0003-sm120-online-fp8.patch /opt/qwen38-patches/0003-sm120-online-f
 COPY patches/0005-abort-ghost-fixes.patch /opt/qwen38-patches/0005-abort-ghost-fixes.patch
 COPY patches/0006-single-gpu-token-sync.patch /opt/qwen38-patches/0006-single-gpu-token-sync.patch
 COPY patches/0007-warm-grammar-path-before-serving.patch /opt/qwen38-patches/0007-warm-grammar-path-before-serving.patch
+COPY patches/0008-qwen4-loader-release-refs.patch /opt/qwen38-patches/0008-qwen4-loader-release-refs.patch
+COPY tests/check_loader_lifetime.py /opt/qwen38-tests/check_loader_lifetime.py
 
 RUN set -eux; \
     cd /sgl-workspace/sglang; \
@@ -55,7 +59,8 @@ RUN set -eux; \
         git apply --check "$p" || { echo "ERROR: $(basename $p) does not apply cleanly to the image tree"; exit 1; }; \
         git apply "$p"; \
     done; \
-    rm -rf /opt/qwen38-patches
+    rm -rf /opt/qwen38-patches; \
+    python3 /opt/qwen38-tests/check_loader_lifetime.py python/sglang/srt/models/qwen4_exp.py
 
 # Load-time assertions that every patch landed. No GPU needed.
 RUN python3 -c "import inspect, pathlib; \
@@ -70,6 +75,8 @@ from sglang.srt.layers.attention.linear import gdn_backend as gb; \
 assert '_recover_ssm' in inspect.getsource(gb.GDNAttnBackend), 'patch 0002 RecoverSSM missing'; \
 from sglang.kernels.ops.gemm import sm120_online_fp8 as ofp8; \
 assert hasattr(ofp8, 'online_fp8_enabled'), 'patch 0003 online MXFP8 missing'; \
+from sglang.srt.models.qwen4_exp import Qwen4ExpForConditionalGeneration as q4; \
+assert 'nonlocal warned_ple_downcast' in inspect.getsource(q4.load_weights), 'patch 0008 loader lifetime fix missing'; \
 from sglang.srt.layers import sampler as s; \
 assert 'tp_sync_world_size' in inspect.getsource(s.Sampler), 'patch 0006 did not apply'; \
 from sglang.srt.entrypoints.warmup import _warmup_registry as r; \

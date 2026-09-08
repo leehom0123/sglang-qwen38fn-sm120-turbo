@@ -58,6 +58,17 @@ The resulting image supports both the RadixArk and NVIDIA ModelOpt checkpoints:
 - **0005** keeps abandoned runs from eating the machine: an aborted or timed-out client now really evicts its request, and no longer starves the queue behind it.
 - **0006** stops the sampler from using NNCL when the server has a single GPU. This was a bug or an oversight in structured JSON decoding, that led to extra GPU memory utilization.
 - **0007** Preload triton kernels at boot via long prefill warmup and structure decoding warmup to ensure reserved GPU memory is sufficient and server doesn't crash in the middle of queries.
+- **0008** removes a self-reference in the PLE shard loader. Its closure retained
+  the loading-time parameter dictionary, keeping replaced MoE scale buffers and
+  the old BF16 `lm_head` alive until cyclic GC. On the tested NVIDIA checkpoint
+  with online MXFP8, those stale tensors total 8.215 GiB. They can now be
+  released during loading.
+
+Earlier release changes when memory becomes available; it does not remove
+additional resident model weights. Automatic KV sizing can use the reclaimed
+space. To retain GPU headroom, set an explicit total KV token cap, for example
+`./serve_nv.sh --max-total-tokens 570048`. This caps the shared cache capacity,
+not the per-request context length. MTP also needs its own model, KV, and graphs.
 
 ## Build and serve
 
